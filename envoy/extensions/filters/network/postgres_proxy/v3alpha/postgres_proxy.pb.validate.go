@@ -58,8 +58,6 @@ func (m *PostgresProxy) Validate() error {
 		}
 	}
 
-	// no validation rules for TerminateSsl
-
 	return nil
 }
 

@@ -10,8 +10,11 @@ set -o pipefail
 
 MESSAGE=$'Hi, there!\n'
 
-# Management server type. Valid values are "ads", "xds", "rest"
+# Management server type. Valid values are "ads", "xds", "rest", or "delta"
 XDS=${XDS:-ads}
+
+#Represents SUFFIX api version
+SUFFIX=${SUFFIX:-}
 
 # Number of RTDS layers.
 if [ "$XDS" = "ads" ]; then
@@ -26,15 +29,21 @@ UPSTREAM_PID=$!
 
 # Envoy start-up command
 ENVOY=${ENVOY:-/usr/local/bin/envoy}
-ENVOY_LOG="envoy.${XDS}$@.log"
+ENVOY_LOG="envoy.${XDS}${SUFFIX}$@.log"
 echo Envoy log: ${ENVOY_LOG}
 
 # Start envoy: important to keep drain time short
-(${ENVOY} -c sample/bootstrap-${XDS}.yaml --drain-time-s 1 -l debug 2> ${ENVOY_LOG})&
+(${ENVOY} -c sample/bootstrap-${XDS}${SUFFIX}.yaml --drain-time-s 1 -l debug 2> ${ENVOY_LOG})&
 ENVOY_PID=$!
 
 function cleanup() {
+  # tribute to @acnodal-tc for fixing this below race condition
+  # signal Envoy and the upsteam server to shut down
   kill ${ENVOY_PID} ${UPSTREAM_PID}
+
+  # wait for Envoy and the upstream server to shut down.  The upstream
+  # server usually exits quickly, before the "wait" command even runs,
+  # so the redirect silences wait's message about that
   wait ${ENVOY_PID} ${UPSTREAM_PID} 2> /dev/null || true
 }
 trap cleanup EXIT

@@ -79,8 +79,6 @@ func (m *MetricsServiceConfig) Validate() error {
 		}
 	}
 
-	// no validation rules for EmitTagsAsLabels
-
 	return nil
 }
 

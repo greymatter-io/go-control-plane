@@ -173,8 +173,6 @@ func (m *ClusterStatus) Validate() error {
 		}
 	}
 
-	// no validation rules for ObservabilityName
-
 	return nil
 }
 
@@ -384,10 +382,6 @@ func (m *HostHealthStatus) Validate() error {
 	// no validation rules for PendingDynamicRemoval
 
 	// no validation rules for PendingActiveHc
-
-	// no validation rules for ExcludedViaImmediateHcFail
-
-	// no validation rules for ActiveHcTimeout
 
 	// no validation rules for EdsHealthStatus
 

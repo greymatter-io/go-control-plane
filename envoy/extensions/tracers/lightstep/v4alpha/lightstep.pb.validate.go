@@ -48,15 +48,10 @@ func (m *LightstepConfig) Validate() error {
 		}
 	}
 
-	// no validation rules for HiddenEnvoyDeprecatedAccessTokenFile
-
-	if v, ok := interface{}(m.GetAccessToken()).(interface{ Validate() error }); ok {
-		if err := v.Validate(); err != nil {
-			return LightstepConfigValidationError{
-				field:  "AccessToken",
-				reason: "embedded message failed validation",
-				cause:  err,
-			}
+	if utf8.RuneCountInString(m.GetAccessTokenFile()) < 1 {
+		return LightstepConfigValidationError{
+			field:  "AccessTokenFile",
+			reason: "value length must be at least 1 runes",
 		}
 	}
 

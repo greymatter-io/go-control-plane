@@ -611,10 +611,6 @@ func (m *ResponseFlags) Validate() error {
 
 	// no validation rules for DurationTimeout
 
-	// no validation rules for UpstreamProtocolError
-
-	// no validation rules for NoClusterFound
-
 	return nil
 }
 

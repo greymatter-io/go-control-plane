@@ -21,13 +21,13 @@ import (
 	pstruct "github.com/golang/protobuf/ptypes/struct"
 	"github.com/google/go-cmp/cmp"
 
-	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
-	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
+	v2 "github.com/envoyproxy/go-control-plane/envoy/api/v2"
+	core "github.com/envoyproxy/go-control-plane/envoy/api/v2/core"
 	"github.com/envoyproxy/go-control-plane/pkg/conversion"
 )
 
 func TestConversion(t *testing.T) {
-	pb := &discovery.DiscoveryRequest{
+	pb := &v2.DiscoveryRequest{
 		VersionInfo: "test",
 		Node:        &core.Node{Id: "proxy"},
 	}
@@ -47,7 +47,7 @@ func TestConversion(t *testing.T) {
 		t.Errorf("MessageToStruct(%v) => got %v, want %v", pb, st.Fields, pbst)
 	}
 
-	out := &discovery.DiscoveryRequest{}
+	out := &v2.DiscoveryRequest{}
 	err = conversion.StructToMessage(st, out)
 	if err != nil {
 		t.Fatalf("unexpected error %v", err)
@@ -60,7 +60,7 @@ func TestConversion(t *testing.T) {
 		t.Error("MessageToStruct(nil) => got no error")
 	}
 
-	if err = conversion.StructToMessage(nil, &discovery.DiscoveryRequest{}); err == nil {
+	if err = conversion.StructToMessage(nil, &v2.DiscoveryRequest{}); err == nil {
 		t.Error("StructToMessage(nil) => got no error")
 	}
 }

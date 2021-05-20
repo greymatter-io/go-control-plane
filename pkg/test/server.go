@@ -8,10 +8,11 @@ import (
 	"net"
 	"net/http"
 
+	serverv2 "github.com/envoyproxy/go-control-plane/pkg/server/v2"
+	serverv3 "github.com/envoyproxy/go-control-plane/pkg/server/v3"
+	testv2 "github.com/envoyproxy/go-control-plane/pkg/test/v2"
+	testv3 "github.com/envoyproxy/go-control-plane/pkg/test/v3"
 	"google.golang.org/grpc"
-
-	server "github.com/envoyproxy/go-control-plane/pkg/server/v3"
-	"github.com/envoyproxy/go-control-plane/pkg/test/v3"
 
 	gcplogger "github.com/envoyproxy/go-control-plane/pkg/log"
 )
@@ -26,18 +27,21 @@ type HTTPGateway struct {
 	// Log is an optional log for errors in response write
 	Log gcplogger.Logger
 
-	Gateway server.HTTPGateway
+	GatewayV2 serverv2.HTTPGateway
+
+	GatewayV3 serverv3.HTTPGateway
 }
 
 // RunAccessLogServer starts an accesslog server.
-func RunAccessLogServer(ctx context.Context, als *test.AccessLogService, alsPort uint) {
+func RunAccessLogServer(ctx context.Context, alsv2 *testv2.AccessLogService, alsv3 *testv3.AccessLogService, alsPort uint) {
 	grpcServer := grpc.NewServer()
 	lis, err := net.Listen("tcp", fmt.Sprintf(":%d", alsPort))
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	test.RegisterAccessLogServer(grpcServer, als)
+	testv2.RegisterAccessLogServer(grpcServer, alsv2)
+	testv3.RegisterAccessLogServer(grpcServer, alsv3)
 	log.Printf("access log server listening on %d\n", alsPort)
 
 	go func() {
@@ -51,7 +55,7 @@ func RunAccessLogServer(ctx context.Context, als *test.AccessLogService, alsPort
 }
 
 // RunManagementServer starts an xDS server at the given port.
-func RunManagementServer(ctx context.Context, srv server.Server, port uint) {
+func RunManagementServer(ctx context.Context, srv2 serverv2.Server, srv3 serverv3.Server, port uint) {
 	// gRPC golang library sets a very small upper bound for the number gRPC/h2
 	// streams over a single TCP connection. If a proxy multiplexes requests over
 	// a single connection to the management server, then it might lead to
@@ -65,7 +69,8 @@ func RunManagementServer(ctx context.Context, srv server.Server, port uint) {
 		log.Fatal(err)
 	}
 
-	test.RegisterServer(grpcServer, srv)
+	testv2.RegisterServer(grpcServer, srv2)
+	testv3.RegisterServer(grpcServer, srv3)
 
 	log.Printf("management server listening on %d\n", port)
 	go func() {
@@ -79,13 +84,14 @@ func RunManagementServer(ctx context.Context, srv server.Server, port uint) {
 }
 
 // RunManagementGateway starts an HTTP gateway to an xDS server.
-func RunManagementGateway(ctx context.Context, srv server.Server, port uint, lg gcplogger.Logger) {
+func RunManagementGateway(ctx context.Context, srv2 serverv2.Server, srv3 serverv3.Server, port uint, lg gcplogger.Logger) {
 	log.Printf("gateway listening HTTP/1.1 on %d\n", port)
 	server := &http.Server{
 		Addr: fmt.Sprintf(":%d", port),
 		Handler: &HTTPGateway{
-			Gateway: server.HTTPGateway{Log: lg, Server: srv},
-			Log:     lg,
+			GatewayV2: serverv2.HTTPGateway{Log: lg, Server: srv2},
+			GatewayV3: serverv3.HTTPGateway{Log: lg, Server: srv3},
+			Log:       lg,
 		},
 	}
 	go func() {
@@ -100,7 +106,10 @@ func RunManagementGateway(ctx context.Context, srv server.Server, port uint, lg 
 }
 
 func (h *HTTPGateway) ServeHTTP(resp http.ResponseWriter, req *http.Request) {
-	bytes, code, err := h.Gateway.ServeHTTP(req)
+	bytes, code, err := h.GatewayV2.ServeHTTP(req)
+	if code == http.StatusNotFound {
+		bytes, code, err = h.GatewayV3.ServeHTTP(req)
+	}
 
 	if err != nil {
 		http.Error(resp, err.Error(), code)

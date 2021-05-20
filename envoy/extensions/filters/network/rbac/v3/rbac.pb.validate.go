@@ -60,8 +60,6 @@ func (m *RBAC) Validate() error {
 		}
 	}
 
-	// no validation rules for ShadowRulesStatPrefix
-
 	if utf8.RuneCountInString(m.GetStatPrefix()) < 1 {
 		return RBACValidationError{
 			field:  "StatPrefix",

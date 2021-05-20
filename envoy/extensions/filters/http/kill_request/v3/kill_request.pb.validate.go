@@ -51,19 +51,7 @@ func (m *KillRequest) Validate() error {
 		}
 	}
 
-	if !_KillRequest_KillRequestHeader_Pattern.MatchString(m.GetKillRequestHeader()) {
-		return KillRequestValidationError{
-			field:  "KillRequestHeader",
-			reason: "value does not match regex pattern \"^[^\\x00\\n\\r]*$\"",
-		}
-	}
-
-	if _, ok := KillRequest_Direction_name[int32(m.GetDirection())]; !ok {
-		return KillRequestValidationError{
-			field:  "Direction",
-			reason: "value must be one of the defined enum values",
-		}
-	}
+	// no validation rules for KillRequestHeader
 
 	return nil
 }
@@ -121,5 +109,3 @@ var _ interface {
 	Cause() error
 	ErrorName() string
 } = KillRequestValidationError{}
-
-var _KillRequest_KillRequestHeader_Pattern = regexp.MustCompile("^[^\x00\n\r]*$")

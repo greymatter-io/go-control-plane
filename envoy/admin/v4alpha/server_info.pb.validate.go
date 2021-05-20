@@ -239,8 +239,6 @@ func (m *CommandLineOptions) Validate() error {
 
 	// no validation rules for SocketMode
 
-	// no validation rules for EnableCoreDump
-
 	return nil
 }
 

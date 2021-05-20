@@ -135,8 +135,6 @@ func (m *PerXdsConfig) Validate() error {
 
 	// no validation rules for Status
 
-	// no validation rules for HiddenEnvoyDeprecatedClientStatus
-
 	switch m.PerXdsConfig.(type) {
 
 	case *PerXdsConfig_ListenerConfig:

@@ -185,6 +185,7 @@ func (cache *snapshotCache) sendHeartbeats(ctx context.Context, node string) {
 
 // SetSnapshotCacheContext updates a snapshot for a node.
 func (cache *snapshotCache) SetSnapshot(ctx context.Context, node string, snapshot Snapshot) error {
+	cache.log.Infof("---> Start setsnapshot")
 	cache.mu.Lock()
 	defer cache.mu.Unlock()
 
@@ -242,7 +243,7 @@ func (cache *snapshotCache) SetSnapshot(ctx context.Context, node string, snapsh
 			}
 		}
 	}
-
+	cache.log.Infof("<--- End setsnapshot")
 	return nil
 }
 

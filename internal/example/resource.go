@@ -14,6 +14,7 @@
 package example
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/golang/protobuf/ptypes"
@@ -30,29 +31,20 @@ import (
 	"github.com/envoyproxy/go-control-plane/pkg/wellknown"
 )
 
-const (
-	ClusterName  = "example_proxy_cluster"
-	RouteName    = "local_route"
-	ListenerName = "listener_0"
-	ListenerPort = 10000
-	UpstreamHost = "www.envoyproxy.io"
-	UpstreamPort = 80
-)
-
-func makeCluster(clusterName string) *cluster.Cluster {
+func makeCluster(r snapshotRecipe) *cluster.Cluster {
 	return &cluster.Cluster{
-		Name:                 clusterName,
+		Name:                 r.clusterName,
 		ConnectTimeout:       ptypes.DurationProto(5 * time.Second),
 		ClusterDiscoveryType: &cluster.Cluster_Type{Type: cluster.Cluster_LOGICAL_DNS},
 		LbPolicy:             cluster.Cluster_ROUND_ROBIN,
-		LoadAssignment:       makeEndpoint(clusterName),
+		LoadAssignment:       makeEndpoint(r),
 		DnsLookupFamily:      cluster.Cluster_V4_ONLY,
 	}
 }
 
-func makeEndpoint(clusterName string) *endpoint.ClusterLoadAssignment {
+func makeEndpoint(r snapshotRecipe) *endpoint.ClusterLoadAssignment {
 	return &endpoint.ClusterLoadAssignment{
-		ClusterName: clusterName,
+		ClusterName: r.clusterName,
 		Endpoints: []*endpoint.LocalityLbEndpoints{{
 			LbEndpoints: []*endpoint.LbEndpoint{{
 				HostIdentifier: &endpoint.LbEndpoint_Endpoint{
@@ -61,9 +53,9 @@ func makeEndpoint(clusterName string) *endpoint.ClusterLoadAssignment {
 							Address: &core.Address_SocketAddress{
 								SocketAddress: &core.SocketAddress{
 									Protocol: core.SocketAddress_TCP,
-									Address:  UpstreamHost,
+									Address:  r.upstreamHost,
 									PortSpecifier: &core.SocketAddress_PortValue{
-										PortValue: UpstreamPort,
+										PortValue: r.upstreamPort,
 									},
 								},
 							},
@@ -75,9 +67,9 @@ func makeEndpoint(clusterName string) *endpoint.ClusterLoadAssignment {
 	}
 }
 
-func makeRoute(routeName string, clusterName string) *route.RouteConfiguration {
+func makeRoute(r snapshotRecipe) *route.RouteConfiguration {
 	return &route.RouteConfiguration{
-		Name: routeName,
+		Name: r.routeName,
 		VirtualHosts: []*route.VirtualHost{{
 			Name:    "local_service",
 			Domains: []string{"*"},
@@ -90,10 +82,10 @@ func makeRoute(routeName string, clusterName string) *route.RouteConfiguration {
 				Action: &route.Route_Route{
 					Route: &route.RouteAction{
 						ClusterSpecifier: &route.RouteAction_Cluster{
-							Cluster: clusterName,
+							Cluster: r.clusterName,
 						},
 						HostRewriteSpecifier: &route.RouteAction_HostRewriteLiteral{
-							HostRewriteLiteral: UpstreamHost,
+							HostRewriteLiteral: r.upstreamHost,
 						},
 					},
 				},
@@ -102,7 +94,7 @@ func makeRoute(routeName string, clusterName string) *route.RouteConfiguration {
 	}
 }
 
-func makeHTTPListener(listenerName string, route string) *listener.Listener {
+func makeHTTPListener(r snapshotRecipe) *listener.Listener {
 	// HTTP filter configuration
 	manager := &hcm.HttpConnectionManager{
 		CodecType:  hcm.HttpConnectionManager_AUTO,
@@ -110,7 +102,7 @@ func makeHTTPListener(listenerName string, route string) *listener.Listener {
 		RouteSpecifier: &hcm.HttpConnectionManager_Rds{
 			Rds: &hcm.Rds{
 				ConfigSource:    makeConfigSource(),
-				RouteConfigName: route,
+				RouteConfigName: r.routeName,
 			},
 		},
 		HttpFilters: []*hcm.HttpFilter{{
@@ -123,14 +115,14 @@ func makeHTTPListener(listenerName string, route string) *listener.Listener {
 	}
 
 	return &listener.Listener{
-		Name: listenerName,
+		Name: r.listenerName,
 		Address: &core.Address{
 			Address: &core.Address_SocketAddress{
 				SocketAddress: &core.SocketAddress{
 					Protocol: core.SocketAddress_TCP,
 					Address:  "0.0.0.0",
 					PortSpecifier: &core.SocketAddress_PortValue{
-						PortValue: ListenerPort,
+						PortValue: r.listenerPort,
 					},
 				},
 			},
@@ -164,15 +156,94 @@ func makeConfigSource() *core.ConfigSource {
 	return source
 }
 
-func GenerateSnapshot() cache.Snapshot {
-	return cache.NewSnapshot(
-		"1",
-		[]types.Resource{}, // endpoints
-		[]types.Resource{makeCluster(ClusterName)},
-		[]types.Resource{makeRoute(RouteName, ClusterName)},
-		[]types.Resource{makeHTTPListener(ListenerName, RouteName)},
-		[]types.Resource{}, // runtimes
-		[]types.Resource{}, // secrets
-		[]types.Resource{}, // extension configs
-	)
+type snapshotRecipe struct {
+	clusterName  string
+	routeName    string
+	listenerName string
+	listenerPort uint32
+	upstreamHost string
+	upstreamPort uint32
+}
+
+func getBasicRecipes() []snapshotRecipe {
+	return []snapshotRecipe{
+		snapshotRecipe{
+			clusterName:  "envoy_proxy_cluster",
+			routeName:    "local_route_0",
+			listenerName: "listener_0",
+			listenerPort: uint32(10000),
+			upstreamHost: "www.envoyproxy.io",
+			upstreamPort: uint32(80),
+		},
+		snapshotRecipe{
+			clusterName:  "github_proxy_cluster",
+			routeName:    "local_route_1",
+			listenerName: "listener_1",
+			listenerPort: uint32(10001),
+			upstreamHost: "github.com",
+			upstreamPort: uint32(80),
+		},
+		snapshotRecipe{
+			clusterName:  "greymatter_proxy_cluster",
+			routeName:    "local_route_2",
+			listenerName: "listener_2",
+			listenerPort: uint32(10002),
+			upstreamHost: "greymatter.io",
+			upstreamPort: uint32(80),
+		},
+		snapshotRecipe{
+			clusterName:  "envoy_proxy_cluster",
+			routeName:    "local_route_3",
+			listenerName: "listener_3",
+			listenerPort: uint32(10003),
+			upstreamHost: "www.envoyproxy.io",
+			upstreamPort: uint32(80),
+		},
+		snapshotRecipe{
+			clusterName:  "github_proxy_cluster",
+			routeName:    "local_route_0",
+			listenerName: "listener_4",
+			listenerPort: uint32(10004),
+			upstreamHost: "github.com",
+			upstreamPort: uint32(80),
+		},
+		snapshotRecipe{
+			clusterName:  "greymatter_proxy_cluster",
+			routeName:    "local_route",
+			listenerName: "listener_5",
+			listenerPort: uint32(10005),
+			upstreamHost: "greymatter.io",
+			upstreamPort: uint32(80),
+		},
+	}
+
+}
+
+func createSnapshot(recipes []snapshotRecipe, version int) cache.Snapshot {
+	var endpoints []types.Resource
+	var clusters []types.Resource
+	var routes []types.Resource
+	var listeners []types.Resource
+	var runtimes []types.Resource
+	var secrets []types.Resource
+	var extensions []types.Resource
+
+	for _, r := range recipes {
+		clusters = append(clusters, makeCluster(r))
+		routes = append(routes, makeRoute(r))
+		listeners = append(listeners, makeHTTPListener(r))
+
+	}
+
+	return cache.NewSnapshot(strconv.Itoa(version), endpoints, clusters, routes, listeners, runtimes, secrets, extensions)
+}
+
+func CreateSnapshots(counts int) []cache.Snapshot {
+	var snapshots []cache.Snapshot
+	recipes := getBasicRecipes()
+	for i := 0; i < counts; i++ {
+		s := createSnapshot(recipes[0:(i%6)], i)
+		snapshots = append(snapshots, s)
+	}
+	return snapshots
 }

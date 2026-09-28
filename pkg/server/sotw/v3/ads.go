@@ -5,15 +5,19 @@ import (
 	"google.golang.org/grpc/status"
 
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
-	"github.com/envoyproxy/go-control-plane/pkg/cache/types"
 	"github.com/envoyproxy/go-control-plane/pkg/cache/v3"
 	"github.com/envoyproxy/go-control-plane/pkg/server/stream/v3"
 )
 
 // process handles a bi-di stream request.
 func (s *server) processADS(sw *streamWrapper, reqCh chan *discovery.DiscoveryRequest) error {
-	// Create a buffered multiplexed channel the size of the known resource types.
-	respChan := make(chan cache.Response, types.UnknownType)
+	// Create a buffered multiplexed channel with room for one response per type URL
+	// the stream may watch. A stream has at most one open watch or unread response
+	// per type URL, so the channel always has room for a watch's response and the
+	// cache never waits for a Send on this stream. The stream ends with ResourceExhausted when a request would
+	// add a type URL beyond that limit; requests for a type URL the stream already
+	// watches are accepted at the limit.
+	respChan := make(chan cache.Response, s.opts.OrderedMaxTypes)
 
 	// Instead of creating a separate channel for each incoming request and abandoning the old one
 	// This algorithm uses (and reuses) a single channel for all request types and guarantees
@@ -106,6 +110,10 @@ func (s *server) processADS(sw *streamWrapper, reqCh chan *discovery.DiscoveryRe
 				subscription = w.sub
 				subscription.SetResourceSubscription(req.GetResourceNames())
 			} else {
+				if len(sw.watches.responders) >= cap(respChan) {
+					return status.Errorf(codes.ResourceExhausted, "ordered ADS stream is limited to %d type URLs", cap(respChan))
+				}
+
 				s.opts.Logger.Debugf("[sotw ads] New subscription for type %s and stream %d", typeURL, sw.ID)
 				subscription = stream.NewSotwSubscription(req.GetResourceNames(), s.opts.IsLegacyWildcardActive(typeURL))
 			}

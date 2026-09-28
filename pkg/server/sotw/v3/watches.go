@@ -66,6 +66,13 @@ type watch struct {
 	cancel   func()
 	response chan cache.Response
 
+	// req is the request the watch was created from.
+	req *discovery.DiscoveryRequest
+
+	// open is true from the creation of the watch until the stream receives a
+	// response for its type URL. The cache can still answer an open watch.
+	open bool
+
 	sub stream.Subscription
 	// Nonce of the latest response sent for this type
 	nonce string

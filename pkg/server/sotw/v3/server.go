@@ -134,6 +134,7 @@ func (s *streamWrapper) send(resp cache.Response) error {
 	if !ok {
 		return fmt.Errorf("no current watch for %s", typeURL)
 	}
+	w.open = false
 	if !responseMatchesCurrentSubscription(resp, w.sub) {
 		return nil
 	}

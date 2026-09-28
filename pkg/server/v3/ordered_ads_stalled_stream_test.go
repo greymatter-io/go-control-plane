@@ -532,7 +532,8 @@ func TestOrderedADSStalledSendAtTypeLimitDoesNotBlockCache(t *testing.T) {
 }
 
 // A request for a type URL beyond the limit ends the stream with the
-// ResourceExhausted code. A limit below one leaves the default.
+// ResourceExhausted code, and the status message names the limit in force. A
+// limit below one leaves the default.
 func TestOrderedADSRejectsTypeBeyondLimit(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -541,7 +542,8 @@ func TestOrderedADSRejectsTypeBeyondLimit(t *testing.T) {
 	}{
 		{name: "default", limit: config.DefaultOrderedMaxTypes},
 		{name: "option", opts: []config.XDSOption{sotw.WithOrderedADSMaxTypes(3)}, limit: 3},
-		{name: "option below one", opts: []config.XDSOption{sotw.WithOrderedADSMaxTypes(0)}, limit: config.DefaultOrderedMaxTypes},
+		{name: "option zero", opts: []config.XDSOption{sotw.WithOrderedADSMaxTypes(0)}, limit: config.DefaultOrderedMaxTypes},
+		{name: "option negative", opts: []config.XDSOption{sotw.WithOrderedADSMaxTypes(-1)}, limit: config.DefaultOrderedMaxTypes},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -559,6 +561,7 @@ func TestOrderedADSRejectsTypeBeyondLimit(t *testing.T) {
 			select {
 			case err := <-done:
 				assert.Equal(t, codes.ResourceExhausted, status.Code(err), "error %v", err)
+				assert.Equal(t, fmt.Sprintf("ordered ADS stream is limited to %d type URLs", tt.limit), status.Convert(err).Message())
 			case <-time.After(returnTimeout):
 				t.Fatal("stream did not end after a request beyond the limit")
 			}

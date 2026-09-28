@@ -13,8 +13,8 @@ import (
 func (s *server) processADS(sw *streamWrapper, reqCh chan *discovery.DiscoveryRequest) error {
 	// Create a buffered multiplexed channel with room for one response per type URL
 	// the stream may watch. A stream has at most one open watch or unread response
-	// per type URL, so the channel never fills and the cache never waits for a Send
-	// on this stream. The stream ends with ResourceExhausted when a request would
+	// per type URL, so the channel always has room for a watch's response and the
+	// cache never waits for a Send on this stream. The stream ends with ResourceExhausted when a request would
 	// add a type URL beyond that limit; requests for a type URL the stream already
 	// watches are accepted at the limit.
 	respChan := make(chan cache.Response, s.opts.OrderedMaxTypes)

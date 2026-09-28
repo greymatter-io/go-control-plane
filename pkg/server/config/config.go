@@ -2,11 +2,22 @@ package config
 
 import "github.com/envoyproxy/go-control-plane/pkg/log"
 
+// DefaultOrderedMaxTypes is the number of type URLs one ordered ADS stream may
+// watch unless the server sets another limit. It covers the 12 resource types
+// go-control-plane supports and leaves room for custom type URLs.
+const DefaultOrderedMaxTypes = 32
+
 // Opts for individual xDS implementations that can be
 // utilized through the functional opts pattern.
 type Opts struct {
 	// If true respond to ADS requests with a guaranteed resource ordering
 	Ordered bool
+
+	// The number of type URLs one ordered ADS stream may watch, which is also the
+	// capacity of the stream's response channel. A request for a type URL beyond
+	// it ends the stream. Requests for a type URL the stream already watches are
+	// accepted at the limit. NewOpts sets DefaultOrderedMaxTypes.
+	OrderedMaxTypes int
 
 	Logger log.Logger
 
@@ -19,8 +30,9 @@ type Opts struct {
 
 func NewOpts() Opts {
 	return Opts{
-		Ordered: false,
-		Logger:  log.NewDefaultLogger(),
+		Ordered:         false,
+		OrderedMaxTypes: DefaultOrderedMaxTypes,
+		Logger:          log.NewDefaultLogger(),
 	}
 }
 

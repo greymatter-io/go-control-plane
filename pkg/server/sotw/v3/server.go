@@ -68,6 +68,23 @@ func WithOrderedADS() config.XDSOption {
 	}
 }
 
+// WithOrderedADSMaxTypes sets the number of type URLs one ordered ADS stream may
+// watch. The default is config.DefaultOrderedMaxTypes, and a value below one
+// keeps the default.
+//
+// The stream's response channel has room for one response per permitted type
+// URL, so the cache never waits for a stream to send. A request for a type URL
+// beyond the limit ends the stream with the ResourceExhausted code. Requests and
+// acknowledgements for a type URL the stream already watches are accepted at the
+// limit.
+func WithOrderedADSMaxTypes(n int) config.XDSOption {
+	return func(o *config.Opts) {
+		if n > 0 {
+			o.OrderedMaxTypes = n
+		}
+	}
+}
+
 // WithLogger configures the server logger. Defaults to no logging.
 func WithLogger(logger log.Logger) config.XDSOption {
 	return func(o *config.Opts) {
@@ -134,7 +151,6 @@ func (s *streamWrapper) send(resp cache.Response) error {
 	if !ok {
 		return fmt.Errorf("no current watch for %s", typeURL)
 	}
-	w.open = false
 	if !responseMatchesCurrentSubscription(resp, w.sub) {
 		return nil
 	}

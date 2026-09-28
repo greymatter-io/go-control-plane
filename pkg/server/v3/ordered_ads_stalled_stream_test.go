@@ -4,15 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"slices"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	core "github.com/envoyproxy/go-control-plane/envoy/config/core/v3"
 	discovery "github.com/envoyproxy/go-control-plane/envoy/service/discovery/v3"
@@ -32,8 +32,8 @@ import (
 //
 // In ordered ADS one goroutine per stream both drains the shared response
 // channel into stream.Send and creates watches. The cache pushes a response
-// into that channel while it holds its own locks, so a stream that watches more
-// type URLs than the channel holds must not be able to stall the cache.
+// into that channel while it holds its own locks, so a stream must not be able
+// to stall the cache by watching many type URLs.
 
 const (
 	// stalledNode is the node ID of the stream whose Send blocks, otherNode the
@@ -41,7 +41,7 @@ const (
 	stalledNode = "stalled"
 	otherNode   = "other"
 
-	// returnTimeout bounds every wait for a call that is expected to return.
+	// returnTimeout bounds every wait for a call that returns.
 	returnTimeout = 5 * time.Second
 )
 
@@ -109,10 +109,10 @@ type stalledStream struct {
 func newStalledStream(ctx context.Context) *stalledStream {
 	return &stalledStream{
 		ctx:     ctx,
-		recv:    make(chan *discovery.DiscoveryRequest, 64),
+		recv:    make(chan *discovery.DiscoveryRequest, 512),
 		entered: make(chan struct{}),
 		release: make(chan struct{}),
-		sent:    make(chan *discovery.DiscoveryResponse, 256),
+		sent:    make(chan *discovery.DiscoveryResponse, 512),
 	}
 }
 
@@ -402,7 +402,7 @@ func TestUnorderedADSStalledSendDoesNotBlockCache(t *testing.T) {
 
 // After Send returns, a stalled stream that missed a snapshot converges on the
 // latest snapshot when the client acknowledges the responses it received: the
-// new watches are answered from the current snapshot with no further
+// new watches receive responses from the current snapshot with no further
 // SetSnapshot.
 func TestOrderedADSStalledStreamReceivesLatestSnapshotAfterAck(t *testing.T) {
 	watched := customTypeURLs(int(types.UnknownType) + 4)
@@ -478,14 +478,13 @@ func newRequest(typeURL string) *discovery.DiscoveryRequest {
 	return &discovery.DiscoveryRequest{Node: &core.Node{Id: stalledNode}, TypeUrl: typeURL}
 }
 
-// The stream handler reads a request for a type URL beyond the response channel
-// capacity while the channel holds one response for each of the watched type
-// URLs: creating the watch answers at once, and the channel is full at that
-// point unless the stream moves to a wider one first.
+// The stream handler reads the request for the last type URL the stream may
+// watch while the channel holds one response for each of the other type URLs:
+// creating the watch sends a response at once, and the response fits.
 func TestOrderedADSCreateWatchDoesNotWaitForFullChannel(t *testing.T) {
 	const extra = "type.example.com/custom.Extra"
 
-	watched := customTypeURLs(int(types.UnknownType))
+	watched := customTypeURLs(config.DefaultOrderedMaxTypes - 1)
 	gate := newRequestGate(t, extra)
 	sc := cache.NewSnapshotCache(true, nodeHash{}, log.NewTestLogger(t))
 	ads := startADSOver(t, sc, sc, gate.callbacks(), watched, sotw.WithOrderedADS())
@@ -513,249 +512,82 @@ func TestOrderedADSCreateWatchDoesNotWaitForFullChannel(t *testing.T) {
 	assertCacheNotBlocked(t, sc, watched[0])
 }
 
-// A request for a type URL beyond the response channel capacity arrives when
-// the stream watches as many type URLs as the channel holds. The stream moves
-// to a wider channel. The responses that were sent or queued before are
-// delivered once and in order, the request is answered from the current
-// snapshot, and the watches that were still open answer the next snapshot.
-func TestOrderedADSRequestBeyondChannelCapacity(t *testing.T) {
-	const extra = "type.example.com/custom.Extra"
+// A stream that watches as many type URLs as it may, with Send blocked, does
+// not block the cache, and every watch receives its response once Send
+// returns.
+func TestOrderedADSStalledSendAtTypeLimitDoesNotBlockCache(t *testing.T) {
+	watched := customTypeURLs(config.DefaultOrderedMaxTypes)
+	ads := startOrderedADS(t, watched)
+	t.Cleanup(func() { ads.stop(t) })
+	sc, str := ads.cache, ads.stream
 
-	known := knownTypeURLs(t)
-	custom := customTypeURLs(int(types.UnknownType))
+	require.True(t, returnsWithin(func() {
+		assert.NoError(t, sc.SetSnapshot(context.Background(), stalledNode, versionOnlySnapshot{version: "v1"}))
+	}), "SetSnapshot for the stalled node blocked")
+	str.waitForSend(t)
+	assertCacheNotBlocked(t, sc, watched[0])
+
+	close(str.release)
+	assert.ElementsMatch(t, watched, typeURLsOf(str.receive(t, len(watched))))
+}
+
+// A request for a type URL beyond the limit ends the stream with the
+// ResourceExhausted code. A limit below one leaves the default.
+func TestOrderedADSRejectsTypeBeyondLimit(t *testing.T) {
 	tests := []struct {
-		name string
-		// watched lists the type URLs of the stream. The snapshot answers the
-		// answered ones, and the watches for the others stay open.
-		watched  []string
-		answered []string
-		// openInOrder is set when the open type URLs are all known types, which
-		// the cache answers in a fixed order.
-		openInOrder bool
+		name  string
+		opts  []config.XDSOption
+		limit int
 	}{
-		{name: "one widening", watched: known, answered: known[:len(known)/2], openInOrder: true},
-		{name: "two widenings", watched: slices.Concat(known, custom), answered: known},
+		{name: "default", limit: config.DefaultOrderedMaxTypes},
+		{name: "option", opts: []config.XDSOption{sotw.WithOrderedADSMaxTypes(3)}, limit: 3},
+		{name: "option below one", opts: []config.XDSOption{sotw.WithOrderedADSMaxTypes(0)}, limit: config.DefaultOrderedMaxTypes},
 	}
 	for _, tt := range tests {
-		open := tt.watched[len(tt.answered):]
-		for _, queued := range []bool{true, false} {
-			name := tt.name + " with received responses"
-			if queued {
-				name = tt.name + " with queued responses"
+		t.Run(tt.name, func(t *testing.T) {
+			sc := cache.NewSnapshotCache(true, nodeHash{}, log.NewTestLogger(t))
+			srv := server.NewServer(t.Context(), sc, server.CallbackFuncs{}, append([]config.XDSOption{sotw.WithOrderedADS()}, tt.opts...)...)
+
+			str := newStalledStream(t.Context())
+			for _, typeURL := range customTypeURLs(tt.limit + 1) {
+				str.recv <- newRequest(typeURL)
 			}
-			t.Run(name, func(t *testing.T) {
-				gate := newRequestGate(t, extra)
-				callbacks := server.Callbacks(server.CallbackFuncs{})
-				if queued {
-					callbacks = gate.callbacks()
-				}
-				sc := cache.NewSnapshotCache(true, nodeHash{}, log.NewTestLogger(t))
-				ads := startADSOver(t, sc, sc, callbacks, tt.watched, sotw.WithOrderedADS())
-				t.Cleanup(func() { ads.stop(t) })
-				str := ads.stream
-				close(str.release)
 
-				versions := map[string]string{extra: "v1"}
-				for _, typeURL := range tt.answered {
-					versions[typeURL] = "v1"
-				}
-				setSnapshot := func() {
-					t.Helper()
+			done := make(chan error, 1)
+			go func() { done <- srv.StreamAggregatedResources(str) }()
 
-					require.True(t, returnsWithin(func() {
-						assert.NoError(t, sc.SetSnapshot(t.Context(), stalledNode, partialSnapshot{versions: versions}))
-					}), "SetSnapshot blocked")
-				}
-
-				if queued {
-					// The handler is held before it creates the watch for the
-					// extra type URL, so the responses stay in the channel.
-					str.recv <- newRequest(extra)
-					gate.waitHeld(t)
-					setSnapshot()
-					gate.open()
-				} else {
-					setSnapshot()
-					assert.Equal(t, tt.answered, typeURLsOf(str.receive(t, len(tt.answered))))
-					str.recv <- newRequest(extra)
-				}
-
-				// Each answered type URL is sent once. The extra type URL is
-				// last: its watch was created after the snapshot.
-				want := append(slices.Clone(tt.answered), extra)
-				if queued {
-					assert.Equal(t, want, typeURLsOf(str.receive(t, len(want))))
-				} else {
-					assert.Equal(t, []string{extra}, typeURLsOf(str.receive(t, 1)))
-				}
-
-				// The watches that stayed open receive the next snapshot.
-				for _, typeURL := range open {
-					versions[typeURL] = "v2"
-				}
-				setSnapshot()
-				got := typeURLsOf(str.receive(t, len(open)))
-				if tt.openInOrder {
-					assert.Equal(t, open, got)
-				} else {
-					assert.ElementsMatch(t, open, got)
-				}
-			})
-		}
+			select {
+			case err := <-done:
+				assert.Equal(t, codes.ResourceExhausted, status.Code(err), "error %v", err)
+			case <-time.After(returnTimeout):
+				t.Fatal("stream did not end after a request beyond the limit")
+			}
+		})
 	}
 }
 
-// failWatcher is a cache.Cache whose CreateWatch fails for a type URL it has
-// already created a watch for.
-type failWatcher struct {
-	cache.Cache
+// A request for a type URL the stream already watches is not a new type URL:
+// it is accepted when the stream watches as many type URLs as it may.
+func TestOrderedADSAcceptsAckAtTypeLimit(t *testing.T) {
+	const limit = 3
 
-	err error
-
-	mu   sync.Mutex
-	seen map[string]bool
-}
-
-func (w *failWatcher) CreateWatch(req *cache.Request, sub cache.Subscription, resp chan cache.Response) (func(), error) {
-	w.mu.Lock()
-	again := w.seen[req.GetTypeUrl()]
-	w.seen[req.GetTypeUrl()] = true
-	w.mu.Unlock()
-
-	if again {
-		return nil, w.err
-	}
-	return w.Cache.CreateWatch(req, sub, resp)
-}
-
-// The stream ends with the error of the cache when it cannot create a watch on
-// the wider channel again. The watch for the request that needs the wider
-// channel is not created at all.
-func TestOrderedADSWidenFailureEndsStream(t *testing.T) {
-	errWatch := errors.New("cannot create watch")
-	watched := customTypeURLs(int(types.UnknownType) + 1)
-
-	sc := &failWatcher{
-		Cache: cache.NewSnapshotCache(true, nodeHash{}, log.NewTestLogger(t)),
-		err:   errWatch,
-		seen:  make(map[string]bool),
-	}
-	srv := server.NewServer(t.Context(), sc, server.CallbackFuncs{}, sotw.WithOrderedADS())
-
-	str := newStalledStream(t.Context())
-	for _, typeURL := range watched {
-		str.recv <- newRequest(typeURL)
-	}
-
-	done := make(chan error, 1)
-	go func() { done <- srv.StreamAggregatedResources(str) }()
-
-	select {
-	case err := <-done:
-		require.ErrorIs(t, err, errWatch)
-	case <-time.After(returnTimeout):
-		t.Fatal("stream did not end after the cache failed to create a watch")
-	}
-}
-
-// hookWatcher is a cache.Cache that runs hook before the CreateWatch call
-// numbered at.
-type hookWatcher struct {
-	cache.Cache
-
-	at    int32
-	hook  func()
-	calls atomic.Int32
-}
-
-func (w *hookWatcher) CreateWatch(req *cache.Request, sub cache.Subscription, resp chan cache.Response) (func(), error) {
-	if w.calls.Add(1) == w.at {
-		w.hook()
-	}
-	return w.Cache.CreateWatch(req, sub, resp)
-}
-
-// A snapshot set after the stream canceled its watches to move to a wider
-// channel, and before it created them again, answers every type URL once, at
-// the new version, in the order of the xDS types.
-func TestOrderedADSSnapshotDuringWidenAnswersEachTypeOnce(t *testing.T) {
-	const extra, barrier = "type.example.com/custom.Extra", "type.example.com/custom.Barrier"
-
-	watched := knownTypeURLs(t)
+	watched := customTypeURLs(limit)
 	sc := cache.NewSnapshotCache(true, nodeHash{}, log.NewTestLogger(t))
-	// The first CreateWatch calls are the initial watches. The next one creates
-	// the first watch again, after every watch was canceled.
-	hw := &hookWatcher{Cache: sc, at: int32(len(watched)) + 1, hook: func() {
-		assert.NoError(t, sc.SetSnapshot(t.Context(), stalledNode, versionOnlySnapshot{version: "v2"}))
-	}}
-	ads := startADSOver(t, sc, hw, server.CallbackFuncs{}, watched, sotw.WithOrderedADS())
+	ads := startADSOver(t, sc, sc, server.CallbackFuncs{}, watched, sotw.WithOrderedADS(), sotw.WithOrderedADSMaxTypes(limit))
 	t.Cleanup(func() { ads.stop(t) })
 	str := ads.stream
 	close(str.release)
 
-	// The barrier request follows the extra one, so a repeated response to a
-	// watched type URL would be sent before the barrier.
-	str.recv <- newRequest(extra)
-	str.recv <- newRequest(barrier)
+	require.NoError(t, sc.SetSnapshot(t.Context(), stalledNode, versionOnlySnapshot{version: "v1"}))
+	resps := str.receive(t, limit)
+	for _, resp := range resps {
+		str.ack(resp)
+	}
 
-	resps := str.receive(t, len(watched)+2)
-	assert.Equal(t, slices.Concat(watched, []string{extra, barrier}), typeURLsOf(resps))
+	require.NoError(t, sc.SetSnapshot(t.Context(), stalledNode, versionOnlySnapshot{version: "v2"}))
+	resps = str.receive(t, limit)
+	assert.ElementsMatch(t, watched, typeURLsOf(resps))
 	for _, resp := range resps {
 		assert.Equal(t, "v2", resp.GetVersionInfo())
-	}
-}
-
-// cancelHookWatcher is a cache.Cache that runs hook after the first call of the
-// cancel function of the watch for hookType, once armed.
-type cancelHookWatcher struct {
-	cache.Cache
-
-	hookType string
-	hook     func()
-	armed    atomic.Bool
-	once     sync.Once
-}
-
-func (w *cancelHookWatcher) CreateWatch(req *cache.Request, sub cache.Subscription, resp chan cache.Response) (func(), error) {
-	cancel, err := w.Cache.CreateWatch(req, sub, resp)
-	if err != nil || req.GetTypeUrl() != w.hookType {
-		return cancel, err
-	}
-	return func() {
-		cancel()
-		if w.armed.Load() {
-			w.once.Do(w.hook)
-		}
-	}, nil
-}
-
-// A snapshot set while the stream cancels its watches to move to a wider
-// channel is answered in the order of the xDS types, wherever in the sequence
-// of cancels it lands: the watches that are still registered are the earliest
-// types, and the ones created again afterwards are the later types.
-func TestOrderedADSSnapshotInsideWidenKeepsTypeOrder(t *testing.T) {
-	const extra = "type.example.com/custom.Extra"
-
-	watched := knownTypeURLs(t)
-	for _, hookIndex := range []int{0, len(watched) / 2, len(watched) - 1} {
-		t.Run(fmt.Sprintf("after cancel %d", hookIndex), func(t *testing.T) {
-			sc := cache.NewSnapshotCache(true, nodeHash{}, log.NewTestLogger(t))
-			cw := &cancelHookWatcher{Cache: sc, hookType: watched[hookIndex], hook: func() {
-				assert.NoError(t, sc.SetSnapshot(t.Context(), stalledNode, versionOnlySnapshot{version: "v2"}))
-			}}
-			ads := startADSOver(t, sc, cw, server.CallbackFuncs{}, watched, sotw.WithOrderedADS())
-			t.Cleanup(func() { ads.stop(t) })
-			str := ads.stream
-			close(str.release)
-
-			cw.armed.Store(true)
-			str.recv <- newRequest(extra)
-
-			resps := str.receive(t, len(watched)+1)
-			assert.Equal(t, append(slices.Clone(watched), extra), typeURLsOf(resps))
-			for _, resp := range resps {
-				assert.Equal(t, "v2", resp.GetVersionInfo())
-			}
-		})
 	}
 }

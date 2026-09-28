@@ -486,6 +486,58 @@ func TestSnapshotCreateWatchWithResourcePreviouslyNotRequested(t *testing.T) {
 	}
 }
 
+func TestSnapshotCreateWatchADSRequestNotCoveringSnapshot(t *testing.T) {
+	c := cache.NewSnapshotCache(true, group{}, log.NewTestLogger(t))
+
+	snapshot, err := cache.NewSnapshot("1", map[rsrc.Type][]types.Resource{
+		rsrc.RouteType: {
+			resource.MakeRouteConfig("a", clusterName),
+			resource.MakeRouteConfig("b", clusterName),
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, c.SetSnapshot(context.Background(), key, snapshot))
+
+	// The request names a subset of the routes of the snapshot: no response is sent, but the watch is kept.
+	req := &discovery.DiscoveryRequest{TypeUrl: rsrc.RouteType, ResourceNames: []string{"a"}}
+	watch := make(chan cache.Response, 1)
+	cancel, err := c.CreateWatch(req, subFromRequest(req), watch)
+	require.NoError(t, err)
+	require.NotNil(t, cancel)
+	assert.Empty(t, watch, "no response is expected while the request does not cover the snapshot")
+	assert.Equal(t, 1, c.GetStatusInfo(key).GetNumWatches())
+
+	// A new snapshot the request still does not cover does not answer the watch.
+	snapshot, err = cache.NewSnapshot("2", map[rsrc.Type][]types.Resource{
+		rsrc.RouteType: {
+			resource.MakeRouteConfig("a", clusterName),
+			resource.MakeRouteConfig("b", clusterName),
+		},
+	})
+	require.NoError(t, err)
+	require.NoError(t, c.SetSnapshot(context.Background(), key, snapshot))
+	assert.Empty(t, watch, "no response is expected while the request does not cover the snapshot")
+	assert.Equal(t, 1, c.GetStatusInfo(key).GetNumWatches())
+
+	// The first snapshot the request covers answers the watch.
+	snapshot, err = cache.NewSnapshot("3", map[rsrc.Type][]types.Resource{
+		rsrc.RouteType: {resource.MakeRouteConfig("a", clusterName)},
+	})
+	require.NoError(t, err)
+	require.NoError(t, c.SetSnapshot(context.Background(), key, snapshot))
+
+	select {
+	case out := <-watch:
+		gotVersion, _ := out.GetVersion()
+		assert.Equal(t, "3", gotVersion)
+		want := map[string]types.ResourceWithTTL{"a": snapshot.Resources[types.Route].Items["a"]}
+		assert.Truef(t, reflect.DeepEqual(cache.IndexResourcesByName(out.(*cache.RawResponse).GetRawResources()), want), "got resources %v, want %v", out.(*cache.RawResponse).GetRawResources(), want)
+	default:
+		t.Fatal("failed to receive snapshot response")
+	}
+	assert.Equal(t, 0, c.GetStatusInfo(key).GetNumWatches())
+}
+
 func TestSnapshotClear(t *testing.T) {
 	c := cache.NewSnapshotCache(true, group{}, log.NewTestLogger(t))
 	require.NoError(t, c.SetSnapshot(context.Background(), key, fixture.snapshot()))

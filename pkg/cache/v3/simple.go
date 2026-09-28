@@ -117,9 +117,9 @@ type snapshotCache struct {
 	mu sync.RWMutex
 }
 
-// missingRequestResource is returned when the request is specifically dropped due to the resources in the request not matching the snapshot content.
+// missingRequestResource is returned when, in ADS mode, the resources in the request do not cover the snapshot content for the requested type.
+// No response is created for the watch, which stays open until a snapshot the request covers is set.
 // This error is not returned to the user.
-// TODO(valerian-roche): remove this check which is very likely no longer needed.
 type missingRequestResource struct {
 	resources []string
 }
@@ -446,11 +446,10 @@ func (cache *snapshotCache) CreateWatch(request *Request, sub Subscription, valu
 	}
 
 	resp, err := createResponse(snapshot, watch, cache.ads)
-	// Specific legacy case. We explicitly drop the request (and therefore do not reply or track the watch) while keeping the stream opened.
-	// TODO(valerian-roche): this is likely unneeded now, to be cleaned
+	// In ADS mode the request does not name all the resources of the snapshot.
+	// No response is sent, but the watch is kept so that a later snapshot the request fits is answered.
 	if errors.As(err, &missingRequestResource{}) {
-		cache.log.Warnf("ADS mode: not responding to request %s %v: %v", request.GetTypeUrl(), request.GetResourceNames(), err)
-		return func() {}, nil
+		return createWatch(watch), nil
 	}
 	if err != nil {
 		return func() {}, fmt.Errorf("failed to create response: %w", err)
